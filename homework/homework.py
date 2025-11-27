@@ -194,6 +194,7 @@ def ensamblar_busqueda() -> GridSearchCV:
 
 def empaquetar_metricas(etiqueta: str, y_true, y_pred) -> dict:
     return {
+        "type": "metrics", 
         "dataset": etiqueta,
         "precision": precision_score(y_true, y_pred, zero_division=0),
         "balanced_accuracy": balanced_accuracy_score(y_true, y_pred),
@@ -206,8 +207,8 @@ def empaquetar_matriz_conf(etiqueta: str, y_true, y_pred) -> dict:
     return {
         "type": "cm_matrix",
         "dataset": etiqueta,
-        "true_0": {"predicted_0": int(cm[0][0]), "predicted_1": int(cm[0][1])},
-        "true_1": {"predicted_0": int(cm[1][0]), "predicted_1": int(cm[1][1])},
+        "true_0": {"predicted_0": int(cm[0][0]), "predicted_1": int(cm[0][1])},  # ← CORREGIDO
+        "true_1": {"predicted_0": int(cm[1][0]), "predicted_1": int(cm[1][1])},  
     }
 
 def main() -> None:
