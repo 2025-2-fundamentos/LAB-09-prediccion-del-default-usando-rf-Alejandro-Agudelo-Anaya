@@ -103,178 +103,141 @@ from pathlib import Path
 import pandas as pd  # type: ignore
 from sklearn.compose import ColumnTransformer  # type: ignore
 from sklearn.ensemble import RandomForestClassifier  # type: ignore
-from sklearn.metrics import (
+from sklearn.metrics import (  # type: ignore
     balanced_accuracy_score,
     confusion_matrix,
     f1_score,
     precision_score,
     recall_score,
-)  # type: ignore
+)
 from sklearn.model_selection import GridSearchCV  # type: ignore
 from sklearn.pipeline import Pipeline  # type: ignore
 from sklearn.preprocessing import OneHotEncoder  # type: ignore
 
-
-# ---------------------------------------------------------
-# Lectura / Escritura
-# ---------------------------------------------------------
-
-def cargar_zip_a_dfs(ruta_dir: str) -> list[pd.DataFrame]:
-    """Carga todos los archivos dentro de zips en un directorio y devuelve una lista de DataFrames."""
+def leer_zip_a_dfs(directorio: str) -> list[pd.DataFrame]:
     dataframes = []
-
-    for ruta_zip in glob(os.path.join(ruta_dir, "*")):
-        with zipfile.ZipFile(ruta_zip, "r") as zf:
-            for nombre in zf.namelist():
-                with zf.open(nombre) as archivo:
-                    dataframes.append(pd.read_csv(archivo, sep=",", index_col=0))
-
+    for zip_path in glob(os.path.join(directorio, "*")):
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            for miembro in zf.namelist():
+                with zf.open(miembro) as fh:
+                    dataframes.append(pd.read_csv(fh, sep=",", index_col=0))
     return dataframes
 
-
-def limpiar_directorio(ruta: str) -> None:
-    """Elimina todo dentro de un directorio y lo vuelve a crear."""
+def reiniciar_directorio(ruta: str) -> None:
     if os.path.exists(ruta):
-        for archivo in glob(os.path.join(ruta, "*")):
+        for f in glob(os.path.join(ruta, "*")):
             try:
-                os.remove(archivo)
+                os.remove(f)
             except IsADirectoryError:
-                continue
+                pass
         try:
             os.rmdir(ruta)
         except OSError:
             pass
-
     os.makedirs(ruta, exist_ok=True)
 
 
-def guardar_objeto_gzip(ruta_salida: str, objeto) -> None:
-    """Guarda cualquier objeto serializable en un archivo .gz."""
-    limpiar_directorio(os.path.dirname(ruta_salida))
+def guardar_modelo_gz(ruta_salida: str, objeto) -> None:
+    reiniciar_directorio(os.path.dirname(ruta_salida))
     with gzip.open(ruta_salida, "wb") as fh:
         pickle.dump(objeto, fh)
 
+def depurar(df: pd.DataFrame) -> pd.DataFrame:
+    tmp = df.copy()
+    tmp = tmp.rename(columns={"default payment next month": "default"})
 
-# ---------------------------------------------------------
-# Procesamiento de datos
-# ---------------------------------------------------------
+    tmp = tmp.loc[tmp["MARRIAGE"] != 0]
+    tmp = tmp.loc[tmp["EDUCATION"] != 0]
 
-def depurar_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """Aplica limpieza y normalización del dataset."""
-    df = df.copy()
-    df = df.rename(columns={"default payment next month": "default"})
+    tmp["EDUCATION"] = tmp["EDUCATION"].apply(lambda v: 4 if v >= 4 else v)
 
-    df = df[(df["MARRIAGE"] != 0) & (df["EDUCATION"] != 0)]
+    return tmp.dropna()
 
-    # Normalización de EDUCATION
-    df["EDUCATION"] = df["EDUCATION"].clip(upper=4)
-
-    return df.dropna()
-
-
-def dividir_features_target(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
+def separar_xy(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
     X = df.drop(columns=["default"])
     y = df["default"]
     return X, y
 
-
-# ---------------------------------------------------------
-# Modelo y Evaluación
-# ---------------------------------------------------------
-
-def construir_gridsearch() -> GridSearchCV:
-    """Construye un pipeline + GridSearchCV."""
-    columnas_categoricas = ["SEX", "EDUCATION", "MARRIAGE"]
-
-    preprocesador = ColumnTransformer(
-        transformers=[("cat", OneHotEncoder(handle_unknown="ignore"), columnas_categoricas)],
+def ensamblar_busqueda() -> GridSearchCV:
+    cat_cols = ["SEX", "EDUCATION", "MARRIAGE"]
+    ohe = OneHotEncoder(handle_unknown="ignore")
+    ct = ColumnTransformer(
+        transformers=[("cat", ohe, cat_cols)],
         remainder="passthrough",
     )
 
-    clasificador = RandomForestClassifier(random_state=42)
+    clf = RandomForestClassifier(random_state=42)
+    pipe = Pipeline(
+        steps=[
+            ("prep", ct),
+            ("rf", clf),
+        ]
+    )
 
-    pipeline = Pipeline([
-        ("preprocesamiento", preprocesador),
-        ("modelo", clasificador),
-    ])
-
-    hiperparametros = {
-        "modelo__n_estimators": [100, 200, 500],
-        "modelo__max_depth": [None, 5, 10],
-        "modelo__min_samples_split": [2, 5],
-        "modelo__min_samples_leaf": [1, 2],
+    grid_params = {
+        "rf__n_estimators": [100, 200, 500],
+        "rf__max_depth": [None, 5, 10],
+        "rf__min_samples_split": [2, 5],
+        "rf__min_samples_leaf": [1, 2],
     }
 
-    return GridSearchCV(
-        estimator=pipeline,
-        param_grid=hiperparametros,
+    gs = GridSearchCV(
+        estimator=pipe,
+        param_grid=grid_params,
         cv=10,
         scoring="balanced_accuracy",
         n_jobs=-1,
-        verbose=2,
         refit=True,
+        verbose=2,
     )
+    return gs
 
-
-def generar_metricas(nombre_ds: str, y_real, y_pred) -> dict:
+def empaquetar_metricas(etiqueta: str, y_true, y_pred) -> dict:
     return {
-        "dataset": nombre_ds,
-        "precision": precision_score(y_real, y_pred, zero_division=0),
-        "balanced_accuracy": balanced_accuracy_score(y_real, y_pred),
-        "recall": recall_score(y_real, y_pred, zero_division=0),
-        "f1_score": f1_score(y_real, y_pred, zero_division=0),
+        "dataset": etiqueta,
+        "precision": precision_score(y_true, y_pred, zero_division=0),
+        "balanced_accuracy": balanced_accuracy_score(y_true, y_pred),
+        "recall": recall_score(y_true, y_pred, zero_division=0),
+        "f1_score": f1_score(y_true, y_pred, zero_division=0),
     }
 
-
-def generar_matriz_confusion(nombre_ds: str, y_real, y_pred) -> dict:
-    cm = confusion_matrix(y_real, y_pred)
+def empaquetar_matriz_conf(etiqueta: str, y_true, y_pred) -> dict:
+    cm = confusion_matrix(y_true, y_pred)
     return {
         "type": "cm_matrix",
-        "dataset": nombre_ds,
+        "dataset": etiqueta,
         "true_0": {"predicted_0": int(cm[0][0]), "predicted_1": int(cm[0][1])},
         "true_1": {"predicted_0": int(cm[1][0]), "predicted_1": int(cm[1][1])},
     }
 
-
-# ---------------------------------------------------------
-# Main
-# ---------------------------------------------------------
-
 def main() -> None:
-    # Cargar datos
-    dataframes = [depurar_dataframe(df) for df in cargar_zip_a_dfs("files/input")]
+    df_list = [depurar(d) for d in leer_zip_a_dfs("files/input")]
 
-    df_test, df_train = dataframes
+    test_df, train_df = df_list
 
-    X_train, y_train = dividir_features_target(df_train)
-    X_test, y_test = dividir_features_target(df_test)
+    X_tr, y_tr = separar_xy(train_df)
+    X_te, y_te = separar_xy(test_df)
 
-    # Entrenar modelo
-    grid = construir_gridsearch()
-    grid.fit(X_train, y_train)
+    buscador = ensamblar_busqueda()
+    buscador.fit(X_tr, y_tr)
 
-    # Guardar modelo
-    guardar_objeto_gzip("files/models/model.pkl.gz", grid)
+    guardar_modelo_gz(os.path.join("files", "models", "model.pkl.gz"), buscador)
 
-    # Predicciones
-    pred_test = grid.predict(X_test)
-    pred_train = grid.predict(X_train)
+    yhat_test = buscador.predict(X_te)
+    yhat_train = buscador.predict(X_tr)
 
-    # Métricas
-    metricas_train = generar_metricas("train", y_train, pred_train)
-    metricas_test = generar_metricas("test", y_test, pred_test)
+    m_test = empaquetar_metricas("test", y_te, yhat_test)
+    m_train = empaquetar_metricas("train", y_tr, yhat_train)
 
-    cm_train = generar_matriz_confusion("train", y_train, pred_train)
-    cm_test = generar_matriz_confusion("test", y_test, pred_test)
+    cm_test = empaquetar_matriz_conf("test", y_te, yhat_test)
+    cm_train = empaquetar_matriz_conf("train", y_tr, yhat_train)
 
-    # Guardar
-    salida = Path("files/output")
-    salida.mkdir(parents=True, exist_ok=True)
-
-    with open(salida / "metrics.json", "w", encoding="utf-8") as fh:
-        for registro in (metricas_train, metricas_test, cm_train, cm_test):
-            fh.write(json.dumps(registro) + "\n")
-
+    Path("files/output").mkdir(parents=True, exist_ok=True)
+    with open("files/output/metrics.json", "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(m_train) + "\n")
+        fh.write(json.dumps(m_test) + "\n")
+        fh.write(json.dumps(cm_train) + "\n")
+        fh.write(json.dumps(cm_test) + "\n")
 
 if __name__ == "__main__":
     main()
